@@ -1,12 +1,15 @@
-import os
+import asyncio
 import json
+import os
 import re
-from playwright.sync_api import sync_playwright
+from pathlib import Path
+
 import resend
+from playwright.async_api import async_playwright
 
 
 # ============================================================
-# RALPH LAUREN VINTED MONITOR
+# SETTINGS
 # ============================================================
 
 SEARCH_URL = (
@@ -15,178 +18,204 @@ SEARCH_URL = (
     "&order=newest_first"
 )
 
-# Maximum LISTING price
 MAX_PRICE = 15.00
 
-# Temporary email destination for Resend testing
-# Once everything works, we can change this to your
-# Carey email after verifying a sending domain.
+# Resend test email
 EMAIL_TO = "prylesarchie@gmail.com"
-
-# Resend's test sender
 EMAIL_FROM = "onboarding@resend.dev"
 
-# File used to remember listings already seen
-SEEN_FILE = "seen_listings.json"
+SEEN_FILE = Path("seen_listings.json")
 
 
 # ============================================================
-# LOAD SEEN LISTINGS
+# RESEND
+# ============================================================
+
+RESEND_API_KEY = os.environ.get("RESEND_API_KEY")
+
+if not RESEND_API_KEY:
+    print("ERROR: RESEND_API_KEY is missing.")
+    raise SystemExit(1)
+
+resend.api_key = RESEND_API_KEY
+
+
+# ============================================================
+# FILTERS
+# ============================================================
+
+EXCLUDED_WORDS = [
+    "women",
+    "womens",
+    "women's",
+    "woman",
+    "ladies",
+    "lady",
+
+    "girl",
+    "girls",
+
+    "baby",
+    "babies",
+    "toddler",
+    "infant",
+
+    "kids",
+    "kid",
+    "child",
+    "children",
+
+    "boy",
+    "boys",
+
+    "maternity",
+
+    "dress",
+    "dresses",
+    "skirt",
+    "skirts",
+    "heels",
+    "handbag",
+    "purse",
+]
+
+EXCLUDED_BRANDS = [
+    "u.s. polo assn",
+    "us polo assn",
+    "u.s polo assn",
+    "chaps",
+    "polo sport",
+    "polo club",
+]
+
+MENS_WORDS = [
+    "men",
+    "mens",
+    "men's",
+    "male",
+    "man",
+]
+
+ADULT_CLOTHING_WORDS = [
+    "polo",
+    "shirt",
+    "button up",
+    "button-up",
+    "jumper",
+    "sweater",
+    "hoodie",
+    "jacket",
+    "coat",
+    "quarter zip",
+    "quarter-zip",
+    "tracksuit",
+    "shorts",
+    "trousers",
+    "pants",
+    "jeans",
+    "gilet",
+    "bodywarmer",
+    "vest",
+    "blazer",
+    "cardigan",
+    "rugby",
+    "oxford",
+    "crewneck",
+    "crew neck",
+]
+
+KIDS_PATTERNS = [
+    r"\bage\s*\d+\b",
+    r"\bage\s*\d+\s*[-–]\s*\d+\b",
+    r"\b\d+\s*[-–]\s*\d+\s*years?\b",
+    r"\b\d+\s*years?\s*old\b",
+    r"\by\/?o\b",
+]
+
+
+# ============================================================
+# SEEN LISTINGS
 # ============================================================
 
 def load_seen():
-
-    if not os.path.exists(SEEN_FILE):
+    if not SEEN_FILE.exists():
         return set()
 
     try:
-
         with open(SEEN_FILE, "r", encoding="utf-8") as file:
-            data = json.load(file)
-
-        return set(data)
-
+            return set(json.load(file))
     except Exception:
-
         return set()
 
 
-# ============================================================
-# SAVE SEEN LISTINGS
-# ============================================================
-
 def save_seen(seen):
-
     with open(SEEN_FILE, "w", encoding="utf-8") as file:
-        json.dump(
-            list(seen),
-            file,
-            indent=2
-        )
+        json.dump(sorted(seen), file, indent=2)
 
 
 # ============================================================
-# CHECK IF LISTING IS MEN'S ADULT CLOTHING
+# LISTING INFORMATION
+# ============================================================
+
+def extract_listing_id(url):
+    match = re.search(r"/items/(\d+)", url)
+
+    if match:
+        return match.group(1)
+
+    return None
+
+
+def extract_price(title):
+    match = re.search(
+        r"([0-9]+(?:[.,][0-9]{1,2})?)\s*A\$",
+        title,
+        re.IGNORECASE,
+    )
+
+    if not match:
+        return None
+
+    try:
+        return float(match.group(1).replace(",", "."))
+    except ValueError:
+        return None
+
+
+# ============================================================
+# MEN'S FILTER
 # ============================================================
 
 def is_mens_listing(title, url):
 
-    text = (title + " " + url).lower()
+    text = f"{title} {url}".lower()
 
-    # --------------------------------------------------------
-    # EXCLUDE DEFINITELY WRONG CATEGORIES
-    # --------------------------------------------------------
+    # Must contain Ralph Lauren.
+    if "ralph lauren" not in text:
+        return False
 
-    excluded_words = [
-        "women",
-        "womens",
-        "women's",
-        "woman",
-        "ladies",
-        "lady",
-        "girl",
-        "girls",
-        "baby",
-        "babies",
-        "toddler",
-        "infant",
-        "kids",
-        "kid",
-        "child",
-        "children",
-        "maternity",
-        "dress",
-        "skirt",
-        "heels",
-        "handbag",
-        "purse"
-    ]
-
-    for word in excluded_words:
-
-        if word in text:
-            return False
-
-    # --------------------------------------------------------
-    # EXCLUDE OTHER BRANDS THAT CONTAIN "RALPH"
-    # --------------------------------------------------------
-
-    excluded_brands = [
-        "u.s. polo assn",
-        "us polo assn",
-        "u.s polo assn",
-        "chaps",
-        "polo sport",
-        "polo club"
-    ]
-
-    for brand in excluded_brands:
-
+    # Remove other brands.
+    for brand in EXCLUDED_BRANDS:
         if brand in text:
             return False
 
-    # --------------------------------------------------------
-    # REQUIRE ACTUAL RALPH LAUREN BRAND
-    # --------------------------------------------------------
+    # Remove obvious women's / children's listings.
+    for word in EXCLUDED_WORDS:
+        if word in text:
+            return False
 
-    ralph_lauren_present = (
-        "ralph lauren" in text
-        or "polo ralph lauren" in text
-    )
+    # Remove children's age descriptions.
+    for pattern in KIDS_PATTERNS:
+        if re.search(pattern, text):
+            return False
 
-    if not ralph_lauren_present:
-        return False
-
-    # --------------------------------------------------------
-    # STRONG MEN'S INDICATORS
-    # --------------------------------------------------------
-
-    mens_words = [
-        "men",
-        "mens",
-        "men's",
-        "male",
-        "man",
-        "boys",
-        "boy"
-    ]
-
-    for word in mens_words:
-
+    # Explicit men's wording.
+    for word in MENS_WORDS:
         if word in text:
             return True
 
-    # --------------------------------------------------------
-    # COMMON ADULT MEN'S CLOTHING
-    #
-    # If the listing doesn't explicitly say men's,
-    # allow common Ralph Lauren adult clothing.
-    # --------------------------------------------------------
-
-    clothing_words = [
-        "polo",
-        "shirt",
-        "jumper",
-        "sweater",
-        "hoodie",
-        "jacket",
-        "coat",
-        "quarter zip",
-        "quarter-zip",
-        "tracksuit",
-        "shorts",
-        "trousers",
-        "pants",
-        "jeans",
-        "gilet",
-        "bodywarmer",
-        "vest",
-        "blazer",
-        "cardigan"
-    ]
-
-    for word in clothing_words:
-
+    # Otherwise allow likely adult clothing.
+    for word in ADULT_CLOTHING_WORDS:
         if word in text:
             return True
 
@@ -194,421 +223,261 @@ def is_mens_listing(title, url):
 
 
 # ============================================================
-# GET VINTED LISTINGS
+# EMAIL
 # ============================================================
 
-def get_listings():
+def send_email(listings):
+
+    if not listings:
+        return
+
+    html_parts = [
+        "<h2>🔥 New Ralph Lauren Find</h2>",
+        (
+            f"<p>Found {len(listings)} new men's Ralph Lauren "
+            f"listing(s) under A${MAX_PRICE:.2f}.</p>"
+        ),
+    ]
+
+    text_parts = [
+        "🔥 NEW RALPH LAUREN FIND",
+        "",
+    ]
+
+    for listing in listings:
+
+        title = listing["title"]
+
+        # Remove Vinted's extra information.
+        if ", Brand:" in title:
+            title = title.split(", Brand:")[0]
+
+        price = f"A${listing['price']:.2f}"
+        url = listing["url"]
+
+        # HTML email.
+        html_parts.append(
+            f"""
+            <div style="margin-bottom: 30px;">
+                <h3>{title}</h3>
+                <p>
+                    <strong>💰 {price}</strong>
+                </p>
+                <p>
+                    <a href="{url}">
+                        🔗 View listing
+                    </a>
+                </p>
+            </div>
+            """
+        )
+
+        # Plain-text fallback.
+        text_parts.append(f"Title: {title}")
+        text_parts.append(f"Price: {price}")
+        text_parts.append(f"Link: {url}")
+        text_parts.append("")
+        text_parts.append("-" * 50)
+        text_parts.append("")
+
+    html_body = "\n".join(html_parts)
+    text_body = "\n".join(text_parts)
+
+    try:
+
+        response = resend.Emails.send(
+            {
+                "from": EMAIL_FROM,
+                "to": [EMAIL_TO],
+                "subject": (
+                    f"🔥 New Ralph Lauren find "
+                    f"under A${MAX_PRICE:.0f}"
+                ),
+                "html": html_body,
+                "text": text_body,
+            }
+        )
+
+        print("EMAIL SENT")
+        print(response)
+
+    except Exception as error:
+        print("EMAIL ERROR:")
+        print(error)
+
+
+# ============================================================
+# VINTED SCANNER
+# ============================================================
+
+async def scan_vinted():
+
+    print("=" * 60)
+    print("RALPH LAUREN VINTED MONITOR")
+    print("=" * 60)
+    print()
+    print(f"Maximum price: A${MAX_PRICE:.2f}")
+    print("Search: Ralph Lauren")
+    print("Country: Australia")
+    print("Sort: Newest first")
+    print()
+
+    seen = load_seen()
 
     listings = []
 
-    with sync_playwright() as p:
+    async with async_playwright() as playwright:
 
-        browser = p.chromium.launch(
+        browser = await playwright.chromium.launch(
             headless=True
         )
 
-        page = browser.new_page(
+        page = await browser.new_page(
             viewport={
                 "width": 1440,
-                "height": 1000
-            }
+                "height": 1000,
+            },
+            user_agent=(
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                "AppleWebKit/537.36 (KHTML, like Gecko) "
+                "Chrome/154.0.0.0 Safari/537.36"
+            ),
         )
 
         print("Opening Vinted...")
 
-        page.goto(
-            SEARCH_URL,
-            wait_until="domcontentloaded",
-            timeout=60000
-        )
+        try:
 
-        # Give Vinted time to load
-        page.wait_for_timeout(5000)
-
-        # Scroll to load additional listings
-        for _ in range(4):
-
-            page.mouse.wheel(
-                0,
-                1500
+            await page.goto(
+                SEARCH_URL,
+                wait_until="domcontentloaded",
+                timeout=60000,
             )
 
-            page.wait_for_timeout(1000)
+            await page.wait_for_timeout(5000)
 
-        # Find product links
-        links = page.locator(
-            'a[data-testid*="product-item"][href*="/items/"]'
+        except Exception as error:
+
+            print("Could not open Vinted:")
+            print(error)
+
+            await browser.close()
+            return
+
+        links = await page.locator(
+            "a[href*='/items/']"
         ).all()
 
         print(
             f"Found {len(links)} possible listings."
         )
 
-        used_ids = set()
+        checked_ids = set()
 
         for link in links:
 
             try:
 
-                # ------------------------------------------------
-                # GET URL
-                # ------------------------------------------------
+                url = await link.get_attribute("href")
+                title = await link.get_attribute("title")
 
-                url = link.get_attribute(
-                    "href"
-                )
-
-                if not url:
+                if not url or not title:
                     continue
 
-                # ------------------------------------------------
-                # GET VINTED TITLE ATTRIBUTE
-                # ------------------------------------------------
+                listing_id = extract_listing_id(url)
 
-                title = link.get_attribute(
-                    "title"
-                )
-
-                if not title:
+                if not listing_id:
                     continue
 
-                # ------------------------------------------------
-                # GET UNIQUE LISTING ID
-                # ------------------------------------------------
-
-                id_match = re.search(
-                    r"/items/(\d+)",
-                    url
-                )
-
-                if not id_match:
+                if listing_id in checked_ids:
                     continue
 
-                listing_id = id_match.group(1)
+                checked_ids.add(listing_id)
 
-                if listing_id in used_ids:
+                price = extract_price(title)
+
+                if price is None:
                     continue
-
-                used_ids.add(
-                    listing_id
-                )
-
-                # ------------------------------------------------
-                # EXTRACT PRICE
-                #
-                # Example:
-                # "29.00 A$, 31.45 A$"
-                #
-                # The first price is the listing price.
-                # ------------------------------------------------
-
-                price_match = re.search(
-                    r"([0-9]+(?:[.,][0-9]{1,2})?)\s*A\$",
-                    title
-                )
-
-                if not price_match:
-                    continue
-
-                price = float(
-                    price_match.group(1).replace(
-                        ",",
-                        "."
-                    )
-                )
-
-                # ------------------------------------------------
-                # PRICE FILTER
-                # ------------------------------------------------
 
                 if price > MAX_PRICE:
                     continue
 
-                # ------------------------------------------------
-                # MEN'S FILTER
-                # ------------------------------------------------
-
-                if not is_mens_listing(
-                    title,
-                    url
-                ):
+                if not is_mens_listing(title, url):
                     continue
 
-                # ------------------------------------------------
-                # CREATE FULL URL
-                # ------------------------------------------------
-
                 if url.startswith("/"):
-
-                    full_url = (
+                    url = (
                         "https://www.vinted.com.au"
                         + url
                     )
-
-                else:
-
-                    full_url = url
-
-                # ------------------------------------------------
-                # SAVE LISTING
-                # ------------------------------------------------
 
                 listings.append(
                     {
                         "id": listing_id,
                         "title": title,
                         "price": price,
-                        "url": full_url
+                        "url": url,
                     }
                 )
 
-            except Exception as error:
+            except Exception:
+                continue
 
-                print(
-                    "Listing error:",
-                    error
-                )
+        await browser.close()
 
-        browser.close()
-
-    return listings
-
-
-# ============================================================
-# SEND EMAIL WITH RESEND
-# ============================================================
-
-def send_email(listings):
-
-    api_key = os.environ.get(
-        "RESEND_API_KEY"
-    )
-
-    if not api_key:
-
-        print(
-            "ERROR: RESEND_API_KEY is not set."
-        )
-
-        return
-
-    resend.api_key = api_key
-
-    # --------------------------------------------------------
-    # CREATE EMAIL HTML
-    # --------------------------------------------------------
-
-    html = """
-    <html>
-
-    <body>
-
-    <h2>🔥 Ralph Lauren Vinted Bargain</h2>
-
-    <p>
-    A new men's Ralph Lauren listing
-    under A$15 was found on Vinted Australia.
-    </p>
-    """
-
-    for listing in listings:
-
-        html += f"""
-
-        <hr>
-
-        <h3>
-        {listing["title"]}
-        </h3>
-
-        <p>
-        <strong>
-        A${listing["price"]:.2f}
-        </strong>
-        </p>
-
-        <p>
-        <a href="{listing["url"]}">
-        🛒 View listing on Vinted
-        </a>
-        </p>
-
-        """
-
-    html += """
-
-    </body>
-
-    </html>
-    """
-
-    # --------------------------------------------------------
-    # SEND
-    # --------------------------------------------------------
-
-    try:
-
-        result = resend.Emails.send(
-            {
-                "from": EMAIL_FROM,
-                "to": [EMAIL_TO],
-                "subject": (
-                    "🔥 Ralph Lauren bargain "
-                    "found on Vinted"
-                ),
-                "html": html
-            }
-        )
-
-        print(
-            "Email sent successfully!"
-        )
-
-        print(
-            result
-        )
-
-    except Exception as error:
-
-        print(
-            "EMAIL ERROR:"
-        )
-
-        print(
-            error
-        )
-
-
-# ============================================================
-# MAIN PROGRAM
-# ============================================================
-
-def main():
-
-    print("=" * 60)
-
+    print()
     print(
-        "RALPH LAUREN VINTED MONITOR"
+        f"Matching men's listings under "
+        f"A${MAX_PRICE:.2f}: {len(listings)}"
     )
-
-    print("=" * 60)
-
-    print()
-
-    print(
-        f"Maximum price: "
-        f"A${MAX_PRICE:.2f}"
-    )
-
-    print()
-
-    # --------------------------------------------------------
-    # LOAD PREVIOUSLY SEEN LISTINGS
-    # --------------------------------------------------------
-
-    old_seen = load_seen()
-
-    # --------------------------------------------------------
-    # SEARCH VINTED
-    # --------------------------------------------------------
-
-    listings = get_listings()
-
-    print()
-
-    print(
-        f"Matching men's listings "
-        f"under A${MAX_PRICE:.2f}: "
-        f"{len(listings)}"
-    )
-
-    print()
-
-    if not listings:
-
-        print(
-            "No matching listings found."
-        )
-
-        return
-
-    # --------------------------------------------------------
-    # FIND NEW LISTINGS
-    # --------------------------------------------------------
 
     new_listings = []
 
-    current_seen = set(
-        old_seen
-    )
-
     for listing in listings:
 
-        listing_id = listing["id"]
+        if listing["id"] not in seen:
+            new_listings.append(listing)
 
-        if listing_id not in old_seen:
+        seen.add(listing["id"])
 
-            new_listings.append(
-                listing
-            )
-
-        current_seen.add(
-            listing_id
-        )
-
-    # --------------------------------------------------------
-    # SAVE SEEN LISTINGS
-    # --------------------------------------------------------
-
-    save_seen(
-        current_seen
-    )
+    save_seen(seen)
 
     print(
-        f"New listings: "
-        f"{len(new_listings)}"
+        f"New listings: {len(new_listings)}"
     )
 
     print()
 
-    # --------------------------------------------------------
-    # DISPLAY MATCHES
-    # --------------------------------------------------------
-
-    for listing in listings:
-
-        print(
-            f'A${listing["price"]:.2f} | '
-            f'{listing["title"]}'
-        )
-
-        print(
-            listing["url"]
-        )
-
-        print()
-
-    # --------------------------------------------------------
-    # SEND EMAIL ONLY FOR NEW LISTINGS
-    # --------------------------------------------------------
-
     if new_listings:
 
-        print(
-            "Sending email for "
-            "new listings..."
-        )
+        print("NEW LISTINGS:")
 
-        send_email(
-            new_listings
-        )
+        for listing in new_listings:
+
+            title = listing["title"]
+
+            if ", Brand:" in title:
+                title = title.split(", Brand:")[0]
+
+            print()
+            print(f"Title: {title}")
+            print(
+                f"Price: A${listing['price']:.2f}"
+            )
+            print(
+                f"Link: {listing['url']}"
+            )
+
+        send_email(new_listings)
 
     else:
 
         print(
-            "No new listings since "
-            "the previous check."
+            "No new listings since the previous check."
         )
+
+    print()
+    print("=" * 60)
 
 
 # ============================================================
@@ -616,5 +485,4 @@ def main():
 # ============================================================
 
 if __name__ == "__main__":
-
-    main()
+    asyncio.run(scan_vinted())
