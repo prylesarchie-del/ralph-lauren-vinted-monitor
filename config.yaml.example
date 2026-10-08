@@ -1,0 +1,42 @@
+# Vinted Notifications Configuration File
+# Copy this file to config.yaml and modify as needed
+# Then run: python update_config.py config.yaml
+
+# Telegram Bot Settings
+telegram_enabled: false
+telegram_token: ""  # Get this from BotFather
+telegram_chat_id: ""  # The chat ID where notifications will be sent
+
+# RSS Feed Settings
+rss_enabled: false
+rss_port: 18473  # Port on which the RSS feed will be served
+rss_max_items: 100  # Maximum number of items to keep in the RSS feed
+
+# Discord Webhook Settings
+discord_enabled: true
+discord_webhook_url: "https://discord.com/api/webhooks/YOUR_WEBHOOK_URL"
+
+# System Settings
+items_per_query: 10  # Maximum number of items to fetch per query
+query_refresh_delay: 1200  # Delay between query refreshes in seconds (1200 = 20 minutes)
+query_delay: 5  # Delay between processing each query in seconds (to avoid rate limiting)
+banwords: ""  # Words to filter out from item titles, separated by ||| (e.g., "word1|||word2|||word3")
+
+# Proxy Settings
+check_proxies: false  # Verify if proxies are working before using them
+proxy_list: ""  # List of proxies separated by semicolons (;) Format: http://ip:port or ip:port
+proxy_list_link: ""  # URL to fetch proxies from (one proxy per line)
+
+# Advanced Settings
+message_template: "{title}\r\n{price}\r\n{brand}\r\n<a href=\"{image}\">&#8205;</a>"  # Template for notification messages
+# Available variables: {title}, {price}, {brand}, {image}
+
+user_agents: '[
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/536.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.14 (KHTML, like Gecko) Version/17.0 Safari/605.1.15",
+    "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.1.0.0 Safari/537.36",
+    "Mozilla/5.0 (iPhone; CPU iPhone OS 16_5 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.5 Mobile/15E147 Safari/604.1",
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:112.0) Gecko/20100101 Firefox/111.0"
+]'  # List of user agents for HTTP requests (JSON array format)
+
+default_headers: '{"Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8", "Accept-Language": "en-US,en;q=0.9"}'  # Default headers for HTTP requests (JSON object format)
