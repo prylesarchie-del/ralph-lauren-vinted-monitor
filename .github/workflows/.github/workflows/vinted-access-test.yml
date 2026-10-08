@@ -1,0 +1,83 @@
+name: Test Vinted Access
+
+on:
+  workflow_dispatch:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install Playwright
+        run: |
+          python -m pip install --upgrade pip
+          pip install playwright
+          python -m playwright install --with-deps chromium
+
+      - name: Test Vinted
+        run: |
+          cat > test_vinted.py <<'PY'
+          from playwright.sync_api import sync_playwright
+          import time
+
+          URL = "https://www.vinted.com.au/catalog?search_text=ralph%20lauren&order=newest_first"
+
+          with sync_playwright() as p:
+              browser = p.chromium.launch(headless=True)
+
+              page = browser.new_page(
+                  viewport={"width": 1440, "height": 1000},
+                  locale="en-AU",
+                  timezone_id="Australia/Melbourne"
+              )
+
+              print("Opening Vinted...")
+              page.goto(URL, wait_until="domcontentloaded", timeout=60000)
+
+              time.sleep(10)
+
+              print("URL:", page.url)
+              print("TITLE:", page.title())
+
+              text = page.locator("body").inner_text()
+
+              print("\n========== PAGE TEXT ==========")
+              print(text[:5000])
+
+              print("\n========== DIAGNOSTICS ==========")
+
+              html = page.content()
+
+              print("Item URLs:", html.lower().count("/items/"))
+              print("Cloudflare:", html.lower().count("cloudflare"))
+              print("Verify:", html.lower().count("verify"))
+              print("Please wait:", html.lower().count("please wait"))
+              print("Ralph Lauren:", html.lower().count("ralph lauren"))
+
+              links = page.locator("a[href*='/items/']")
+              print("Item links:", links.count())
+
+              page.screenshot(
+                  path="vinted-github.png",
+                  full_page=True
+              )
+
+              browser.close()
+          PY
+
+          python test_vinted.py
+
+      - name: Upload screenshot
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: vinted-github-screenshot
+          path: vinted-github.png
